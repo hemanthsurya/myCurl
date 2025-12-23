@@ -39,6 +39,27 @@ static Url parse_url(const std::string& u) {
     return r;
 }
 
+static bool get_method(const std::string& url) {
+    Url u = parse_url(url);
+    net::io_context ioc;
+    tcp::resolver resolver(ioc);
+    tcp::socket socket(ioc);
+
+    auto results = resolver.resolve(u.host, u.port);
+    net::connect(socket, results);
+
+    http::request<http::empty_body> req{http::verb::get, u.target, 11};
+    req.set(http::field::host, u.host);
+
+    http::write(socket, req);
+
+    beast::flat_buffer buffer;
+    http::response<http::dynamic_body> res;
+    http::read(socket, buffer, res);
+
+    return res.result() == http::status::ok;
+}
+
 int main(int argc, char* argv[]) {
     std::string outfile;
     
