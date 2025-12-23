@@ -1,5 +1,15 @@
 #include <getopt.h>
 #include <iostream>
+#include <boost/beast.hpp>
+#include <boost/asio.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/asio/ssl.hpp>
+
+namespace beast = boost::beast;
+namespace http  = beast::http;
+namespace net   = boost::asio;
+namespace ssl = boost::asio::ssl;
+using tcp = net::ip::tcp;
 
 struct Url {
     std::string scheme, host, port, target;
