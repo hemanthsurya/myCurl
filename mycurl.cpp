@@ -159,7 +159,7 @@ int main(int argc, char* argv[]) {
         bool is_redirect = get_method(url, "", redirect, body_size);
         if (!is_redirect) break;
 
-        std::cout << "Redirected to: " << redirect << "\n";
+        std::cout << "Redirecting to: " << redirect << "\n";
         url = redirect;
 
         if (++redirects >= 10) {
