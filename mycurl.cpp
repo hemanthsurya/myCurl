@@ -65,6 +65,7 @@ static bool get_method(const std::string& url,
     Url u = parse_url(url);
     net::io_context ioc;
     tcp::resolver resolver(ioc);
+
     redirect.clear();
     body_bytes = 0;
 
@@ -78,32 +79,7 @@ static bool get_method(const std::string& url,
         http::write(stream, req);
         beast::flat_buffer buffer;
 
-        if (!outfile.empty()) {
-            http::response<http::file_body> res;
-            beast::error_code ec;
-
-            res.body().open(outfile.c_str(), beast::file_mode::write, ec);
-            if (ec) throw beast::system_error(ec);
-
-            http::read(stream, buffer, res);
-
-            for (auto const& h : res.base())
-                std::cout << h.name_string() << ": " << h.value() << "\n";
-
-            if (res.result_int() >= 300 && res.result_int() < 400 &&
-                res.base().count(http::field::location))
-            {
-                redirect = res.base()[http::field::location].to_string();
-                res.body().close();
-                return true;
-            }
-
-            res.body().close();
-            body_bytes = std::filesystem::file_size(outfile);
-            return false;
-        }
-
-        else {
+        if (outfile.empty()) {
             http::response<http::dynamic_body> res;
             http::read(stream, buffer, res);
 
@@ -120,6 +96,20 @@ static bool get_method(const std::string& url,
             body_bytes = res.body().size();
             return false;
         }
+
+        http::response<http::file_body> res;
+        beast::error_code ec;
+        res.body().open(outfile.c_str(), beast::file_mode::write, ec);
+        if (ec) throw beast::system_error(ec);
+
+        http::read(stream, buffer, res);
+
+        for (auto const& h : res.base())
+            std::cout << h.name_string() << ": " << h.value() << "\n";
+
+        res.body().close();
+        body_bytes = std::filesystem::file_size(outfile);
+        return false;
     };
 
     if (u.scheme == "https") {
@@ -166,17 +156,19 @@ int main(int argc, char* argv[]) {
     std::size_t body_size = 0;
 
     while (true) {
-        bool is_redirect = get_method(url, outfile, redirect, body_size);
+        bool is_redirect = get_method(url, "", redirect, body_size);
         if (!is_redirect) break;
 
         std::cout << "Redirected to: " << redirect << "\n";
         url = redirect;
 
         if (++redirects >= 10) {
-            std::cerr << "Too many redirects\n";
+            std::cerr << "Error: too many redirects\n";
             return 1;
         }
     }
+
+    get_method(url, outfile, redirect, body_size);
 
     auto t1 = std::chrono::steady_clock::now();
     double secs = std::chrono::duration<double>(t1 - t0).count();
