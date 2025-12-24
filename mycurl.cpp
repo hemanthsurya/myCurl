@@ -39,6 +39,21 @@ static Url parse_url(const std::string& u) {
     return r;
 }
 
+static void print_cert(ssl::stream<tcp::socket>& stream) {
+    X509* cert = SSL_get_peer_certificate(stream.native_handle());
+    if (!cert) return;
+
+    char subj[512], iss[512];
+    X509_NAME_oneline(X509_get_subject_name(cert), subj, sizeof(subj));
+    X509_NAME_oneline(X509_get_issuer_name(cert), iss, sizeof(iss));
+
+    std::cout << "Server certificate:\n";
+    std::cout << "  Subject: " << subj << "\n";
+    std::cout << "  Issuer:  " << iss << "\n";
+
+    X509_free(cert);
+}
+
 static bool get_method(const std::string& url) {
     Url u = parse_url(url);
     net::io_context ioc;
@@ -58,6 +73,22 @@ static bool get_method(const std::string& url) {
     http::read(socket, buffer, res);
 
     return res.result() == http::status::ok;
+
+    if (u.scheme == "https") {
+        ssl::context ctx(ssl::context::tls_client);
+        ctx.set_default_verify_paths();
+
+        ssl::stream<tcp::socket> stream(ioc, ctx);
+        SSL_set_tlsext_host_name(stream.native_handle(), u.host.c_str());
+        net::connect(stream.next_layer(), results);
+        stream.handshake(ssl::stream_base::client);
+
+        print_cert(stream);
+    }
+    else {
+        tcp::socket socket(ioc);
+        net::connect(socket, results);
+    }
 }
 
 int main(int argc, char* argv[]) {
