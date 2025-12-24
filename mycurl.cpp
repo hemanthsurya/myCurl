@@ -4,6 +4,9 @@
 #include <boost/asio.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/asio/ssl.hpp>
+#include <filesystem>
+#include <chrono>
+#include <iomanip>
 
 namespace beast = boost::beast;
 namespace http  = beast::http;
@@ -54,7 +57,8 @@ static void print_cert(ssl::stream<tcp::socket>& stream) {
     X509_free(cert);
 }
 
-static bool get_method(const std::string& url) {
+static bool get_method(const std::string& url, const std::string& outfile, std::string& redirect, std::size_t& body_bytes) 
+{
     Url u = parse_url(url);
     net::io_context ioc;
     tcp::resolver resolver(ioc);
@@ -69,10 +73,46 @@ static bool get_method(const std::string& url) {
     http::write(socket, req);
 
     beast::flat_buffer buffer;
-    http::response<http::dynamic_body> res;
-    http::read(socket, buffer, res);
+    
+    if (!outfile.empty()) {
+        http::response<http::file_body> res;
+        beast::error_code ec;
 
-    return res.result() == http::status::ok;
+        res.body().open(outfile.c_str(), beast::file_mode::write, ec);
+        if (ec) throw beast::system_error(ec);
+
+        for (auto const& h : res.base())
+            std::cout << h.name_string() << ": " << h.value() << "\n";
+
+        if (res.result_int() >= 300 && res.result_int() < 400 &&
+            res.base().count(http::field::location))
+        {
+            redirect = res.base()[http::field::location].to_string();
+            res.body().close();
+            return true;
+        }
+
+        res.body().close();
+        body_bytes = std::filesystem::file_size(outfile);
+        return false;
+    }
+
+    else {
+        http::response<http::dynamic_body> res;
+
+        for (auto const& h : res.base())
+            std::cout << h.name_string() << ": " << h.value() << "\n";
+
+        if (res.result_int() >= 300 && res.result_int() < 400 &&
+            res.base().count(http::field::location))
+        {
+            redirect = res.base()[http::field::location].to_string();
+            return true;
+        }
+
+        body_bytes = res.body().size();
+        return false;
+    }
 
     if (u.scheme == "https") {
         ssl::context ctx(ssl::context::tls_client);
@@ -113,6 +153,23 @@ int main(int argc, char* argv[]) {
     std::string url = argv[optind];
     (void)outfile;
     (void)url;
+
+    std::string redirect;
+    int redirects = 0;
+    std::size_t body_size = 0;
+
+    while (true) {
+        bool is_redirect = get_method(url, outfile, redirect, body_size);
+        if (!is_redirect) break;
+
+        std::cout << "Redirected to: " << redirect << "\n";
+        url = redirect;
+
+        if (++redirects >= 10) {
+            std::cerr << "Too many redirects\n";
+            return 1;
+        }
+    }
 
     return 0;
 }
