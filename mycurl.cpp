@@ -57,62 +57,70 @@ static void print_cert(ssl::stream<tcp::socket>& stream) {
     X509_free(cert);
 }
 
-static bool get_method(const std::string& url, const std::string& outfile, std::string& redirect, std::size_t& body_bytes) 
+static bool get_method(const std::string& url,
+                   const std::string& outfile,
+                   std::string& redirect,
+                   std::size_t& body_bytes)
 {
     Url u = parse_url(url);
     net::io_context ioc;
     tcp::resolver resolver(ioc);
-    tcp::socket socket(ioc);
+    redirect.clear();
+    body_bytes = 0;
 
     auto results = resolver.resolve(u.host, u.port);
-    net::connect(socket, results);
 
-    http::request<http::empty_body> req{http::verb::get, u.target, 11};
-    req.set(http::field::host, u.host);
+    auto handle_response = [&](auto& stream) -> bool {
+        http::request<http::empty_body> req{http::verb::get, u.target, 11};
+        req.set(http::field::host, u.host);
+        req.set(http::field::user_agent, "mycurl");
 
-    http::write(socket, req);
+        http::write(stream, req);
+        beast::flat_buffer buffer;
 
-    beast::flat_buffer buffer;
-    
-    if (!outfile.empty()) {
-        http::response<http::file_body> res;
-        beast::error_code ec;
+        if (!outfile.empty()) {
+            http::response<http::file_body> res;
+            beast::error_code ec;
 
-        res.body().open(outfile.c_str(), beast::file_mode::write, ec);
-        if (ec) throw beast::system_error(ec);
+            res.body().open(outfile.c_str(), beast::file_mode::write, ec);
+            if (ec) throw beast::system_error(ec);
 
-        for (auto const& h : res.base())
-            std::cout << h.name_string() << ": " << h.value() << "\n";
+            http::read(stream, buffer, res);
 
-        if (res.result_int() >= 300 && res.result_int() < 400 &&
-            res.base().count(http::field::location))
-        {
-            redirect = res.base()[http::field::location].to_string();
+            for (auto const& h : res.base())
+                std::cout << h.name_string() << ": " << h.value() << "\n";
+
+            if (res.result_int() >= 300 && res.result_int() < 400 &&
+                res.base().count(http::field::location))
+            {
+                redirect = res.base()[http::field::location].to_string();
+                res.body().close();
+                return true;
+            }
+
             res.body().close();
-            return true;
+            body_bytes = std::filesystem::file_size(outfile);
+            return false;
         }
 
-        res.body().close();
-        body_bytes = std::filesystem::file_size(outfile);
-        return false;
-    }
+        else {
+            http::response<http::dynamic_body> res;
+            http::read(stream, buffer, res);
 
-    else {
-        http::response<http::dynamic_body> res;
+            for (auto const& h : res.base())
+                std::cout << h.name_string() << ": " << h.value() << "\n";
 
-        for (auto const& h : res.base())
-            std::cout << h.name_string() << ": " << h.value() << "\n";
+            if (res.result_int() >= 300 && res.result_int() < 400 &&
+                res.base().count(http::field::location))
+            {
+                redirect = res.base()[http::field::location].to_string();
+                return true;
+            }
 
-        if (res.result_int() >= 300 && res.result_int() < 400 &&
-            res.base().count(http::field::location))
-        {
-            redirect = res.base()[http::field::location].to_string();
-            return true;
+            body_bytes = res.body().size();
+            return false;
         }
-
-        body_bytes = res.body().size();
-        return false;
-    }
+    };
 
     if (u.scheme == "https") {
         ssl::context ctx(ssl::context::tls_client);
@@ -124,26 +132,26 @@ static bool get_method(const std::string& url, const std::string& outfile, std::
         stream.handshake(ssl::stream_base::client);
 
         print_cert(stream);
+        return handle_response(stream);
     }
     else {
         tcp::socket socket(ioc);
         net::connect(socket, results);
+        return handle_response(socket);
     }
 }
 
 int main(int argc, char* argv[]) {
     std::string outfile;
-    
+
     static option opts[] = {
         {"output", required_argument, nullptr, 'o'},
         {0,0,0,0}
     };
 
     int c;
-    while ((c = getopt_long(argc, argv, "o:", opts, nullptr)) != -1) {
-        if (c == 'o')
-            outfile = optarg;
-    }
+    while ((c = getopt_long(argc, argv, "o:", opts, nullptr)) != -1)
+        if (c == 'o') outfile = optarg;
 
     if (optind >= argc) {
         std::cerr << "Usage: mycurl [-o file] URL\n";
@@ -151,8 +159,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::string url = argv[optind];
-    (void)outfile;
-    (void)url;
+    auto t0 = std::chrono::steady_clock::now();
 
     std::string redirect;
     int redirects = 0;
@@ -171,5 +178,17 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    return 0;
+    auto t1 = std::chrono::steady_clock::now();
+    double secs = std::chrono::duration<double>(t1 - t0).count();
+    double mbps = (body_size * 8.0) / (secs * 1e6);
+
+    auto now = std::chrono::system_clock::to_time_t(
+        std::chrono::system_clock::now());
+
+    std::cout << std::put_time(std::localtime(&now), "%F %T") << " "
+              << url << " "
+              << body_size << " [bytes] "
+              << std::fixed << std::setprecision(6)
+              << secs << " [s] "
+              << mbps << " [Mbps]\n";
 }
